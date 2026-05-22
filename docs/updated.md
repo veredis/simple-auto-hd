@@ -1,8 +1,14 @@
-## Simple Auto HD has been updated to v2.0.5!
+## Simple Auto HD has been updated to v2.0.7!
 
-This chrome web store update includes both 2.0.4 and 2.0.5 updates at same time, rolled into one for convenience.
+This update fixes quality selection after recent YouTube settings menu changes.
 
-Latest version: v2.0.5 
+Latest version: v2.0.7
+### Updates:
+1. Made the YouTube quality selector wait for the settings and quality menus to render before clicking.
+2. Updated menu selection to use visible quality labels instead of relying on YouTube's previous nested DOM structure.
+3. Added fallback handling so the settings menu is closed if quality selection cannot complete.
+
+Older version: v2.0.5
 ### Updates:
 1. Fixed mutation observer issue in previous version to also use timeout for at least 100ms to make sure element is ready for manipulation.
 2. Added extension enable/disable feature from the popup menu.
