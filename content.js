@@ -191,6 +191,125 @@
         '화질'
     ];
 
+    var menuWaitTimeout = 1500;
+    var menuCloseDelay = 200;
+
+    function normalizeMenuText(text) {
+        return (text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function isElementVisible(element) {
+        return !!(element && (element.offsetWidth || element.offsetHeight || element.getClientRects().length));
+    }
+
+    function getMenuItemFromLabel(label) {
+        return label.closest('.ytp-menuitem') || label;
+    }
+
+    function waitForValue(getValue, timeout) {
+        return new Promise(function(resolve) {
+            var value = getValue();
+
+            if (value) {
+                resolve(value);
+                return;
+            }
+
+            var endTime = Date.now() + timeout;
+            var interval = setInterval(function() {
+                value = getValue();
+
+                if (value || Date.now() >= endTime) {
+                    clearInterval(interval);
+                    resolve(value || null);
+                }
+            }, 50);
+        });
+    }
+
+    function isSettingsMenuOpen(settingsButton) {
+        var settingsMenu = document.querySelector('.ytp-settings-menu');
+        return (settingsButton && settingsButton.getAttribute('aria-expanded') === 'true') || isElementVisible(settingsMenu);
+    }
+
+    function openSettingsMenu(settingsButton) {
+        if (!isSettingsMenuOpen(settingsButton)) {
+            settingsButton.click();
+        }
+    }
+
+    function closeSettingsMenu(settingsButton) {
+        if (isSettingsMenuOpen(settingsButton)) {
+            settingsButton.click();
+        }
+    }
+
+    function findQualityMenuLabel() {
+        var labels = Array.from(document.querySelectorAll('.ytp-menuitem-label'));
+
+        for (var i = 0; i < labels.length; i++) {
+            var menuItem = getMenuItemFromLabel(labels[i]);
+            var labelText = normalizeMenuText(labels[i].textContent);
+
+            if (isElementVisible(menuItem) && qualityTitles.includes(labelText)) {
+                return labels[i];
+            }
+        }
+
+        return null;
+    }
+
+    function getQualityValue(label) {
+        var labelText = normalizeMenuText(label.textContent);
+        var match = labelText.match(/^(Auto|[0-9]+p(?:[0-9]+)?)/);
+
+        return match ? match[1] : '';
+    }
+
+    function getVisibleQualityLabels() {
+        var labels = Array.from(document.querySelectorAll('.ytp-quality-menu .ytp-menuitem-label'));
+
+        if (labels.length === 0) {
+            labels = Array.from(document.querySelectorAll('.ytp-menuitem-label'));
+        }
+
+        return labels.filter(function(label) {
+            var labelText = normalizeMenuText(label.textContent);
+            var menuItem = getMenuItemFromLabel(label);
+
+            return isElementVisible(menuItem) &&
+                getQualityValue(label) !== '' &&
+                !label.querySelector('.ytp-premium-label') &&
+                !labelText.includes('Premium');
+        });
+    }
+
+    function clickMenuLabel(label) {
+        getMenuItemFromLabel(label).click();
+    }
+
+    function findQualityByName(quality, targetItems) {
+        for (var i = 0; i < targetItems.length; i++) {
+            if (getQualityValue(targetItems[i]) === quality) {
+                return targetItems[i];
+            }
+        }
+
+        return null;
+    }
+
+    function findBestAvailableQuality(targetItems) {
+        for (var i = 0; i < qualitiesArray.length; i++) {
+            var targetItem = findQualityByName(qualitiesArray[i], targetItems);
+
+            if (targetItem) {
+                return targetItem;
+            }
+        }
+
+        return targetItems[0] || null;
+    }
+
     // Inititate observer
     function initiateObserverAndObserve() {
         var observer = new MutationObserver(function (mutations) {
@@ -214,6 +333,12 @@
     // Listen to theater mode button for clicks
     function listenToTheaterModeButton() {
         var sizeButton = document.getElementsByClassName('ytp-size-button')[0];
+
+        if (!sizeButton || sizeButton.dataset.simpleAutoHdTheaterListenerAttached === 'true') {
+            return;
+        }
+
+        sizeButton.dataset.simpleAutoHdTheaterListenerAttached = 'true';
         
         // Listen to theater mode changes
         sizeButton.addEventListener('click', function(event) {
@@ -249,6 +374,11 @@
         }
 
         var sizeButton = document.getElementsByClassName('ytp-size-button')[0];
+
+        if (!sizeButton) {
+            return;
+        }
+
         var sizeButtonHasTheaterModeTitle = theaterModeTitles.includes(sizeButton.getAttribute('data-title-no-tooltip'));
 
         if (theaterMode && sizeButtonHasTheaterModeTitle) {
@@ -268,7 +398,7 @@
     };
 
     // Update to given quality
-    var updateQuality = function (preferredQuality) {
+    var updateQuality = async function (preferredQuality) {
         if (preferredQuality === undefined) {
             preferredQuality = 'best-available';
             chrome.storage.sync.set({ preferredQuality: preferredQuality }, function () { });
@@ -276,58 +406,70 @@
 
         var settingsButton = document.getElementsByClassName('ytp-settings-button')[0];
 
-        settingsButton.click();
+        if (!settingsButton) {
+            return;
+        }
 
-        var buttons = document.getElementsByClassName('ytp-menuitem-label');
+        try {
+            openSettingsMenu(settingsButton);
 
-        for (var i = 0; i < buttons.length; i++) {
-            if (qualityTitles.includes(buttons[i].innerHTML)) {
-                buttons[i].click();
+            var qualityMenuLabel = await waitForValue(findQualityMenuLabel, menuWaitTimeout);
+
+            if (!qualityMenuLabel) {
+                throw new Error('Quality menu item was not found');
             }
+
+            clickMenuLabel(qualityMenuLabel);
+
+            var targetItems = await waitForValue(function() {
+                var items = getVisibleQualityLabels();
+                return items.length > 0 ? items : null;
+            }, menuWaitTimeout);
+
+            if (!targetItems) {
+                throw new Error('Quality options were not found');
+            }
+
+            var targetItem = preferredQuality === 'best-available'
+                ? findBestAvailableQuality(targetItems)
+                : findTargetItem(preferredQuality, targetItems);
+
+            if (!targetItem) {
+                throw new Error('Preferred quality was not found');
+            }
+
+            clickMenuLabel(targetItem);
+        } catch (error) {
+            console.log('Simple Auto HD could not update quality:', error);
+        } finally {
+            setTimeout(function() {
+                closeSettingsMenu(settingsButton);
+            }, menuCloseDelay);
         }
-
-        var targetItem;
-
-        var targetItems = document.querySelectorAll('.ytp-quality-menu .ytp-menuitem-label');
-        targetItems = Array.from(targetItems).filter(item => !item.innerHTML.includes("ytp-premium-label"));
-        
-        if (preferredQuality === 'best-available') {
-            targetItem = targetItems[0];
-        } else {
-            targetItem = findTargetItem(preferredQuality, targetItems);
-        }
-
-        targetItem.click();
     }
 
     // Find the target quality
     function findTargetItem(preferredQuality, targetItems) {
-        var targetItem = '';
-        
-        for (var i = 0; i < targetItems.length; i++) {
-            var potentialTargetItem = targetItems[i].childNodes[0].childNodes[0];
+        var key = qualitiesArray.indexOf(preferredQuality);
 
-            var quality = potentialTargetItem.innerHTML.split(' ')[0];
+        if (key === -1) {
+            return findBestAvailableQuality(targetItems);
+        }
 
-            if (quality === preferredQuality) {
-                targetItem = potentialTargetItem;
+        for (var i = key; i < qualitiesArray.length; i++) {
+            var targetItem = findQualityByName(qualitiesArray[i], targetItems);
+
+            if (targetItem) {
+                return targetItem;
             }
         }
 
-        var key = qualitiesArray.indexOf(preferredQuality);
-
-        if (targetItem === '' && (qualitiesArray[key + 1] !== undefined)) {
-            preferredQuality = qualitiesArray[key + 1];
-
-            return findTargetItem(preferredQuality, targetItems);
-        }
-
-        return targetItem;
+        return findBestAvailableQuality(targetItems);
     }
 
     // Listen for chrome storage changes
     chrome.storage.onChanged.addListener(function (changes, namespace) {
-        for (key in changes) {
+        for (var key in changes) {
             if (key === 'theaterMode') {
                 toggleTheaterMode();
             } else if (key === 'preferredQuality') {
